@@ -2,12 +2,14 @@
 #include <Adafruit_GFX.h>
 #include <Adafruit_SSD1306.h>
 
-// Display OLED
 #define SCREEN_WIDTH 128
 #define SCREEN_HEIGHT 64
-Adafruit_SSD1306 display(SCREEN_WIDTH, SCREEN_HEIGHT, &Wire, -1);
+#define OLED_RESET -1
+Adafruit_SSD1306 display(SCREEN_WIDTH, SCREEN_HEIGHT, &Wire, OLED_RESET);
 
-// Pinos
+//SDA → A4
+//SCL → A5
+
 #define GREEN_LED   2
 #define RED_LED     3
 #define YELLOW_LED  4
@@ -19,10 +21,6 @@ Adafruit_SSD1306 display(SCREEN_WIDTH, SCREEN_HEIGHT, &Wire, -1);
 #define BLUE_BTN    9
 
 #define BUZZER      10
-
-//DISPLAY OLED I2C
-//SCL NO ARDUINO UNO -> A5
-//SDA NO ARDUINO UNO -> A4
 
 const int tones[] = { 261, 294, 329, 392 }; // C4, D4, E4, G4
 const int leds[] = { GREEN_LED, RED_LED, YELLOW_LED, BLUE_LED };
@@ -42,28 +40,21 @@ void setup() {
   randomSeed(analogRead(0));
   Serial.begin(9600);
 
-  if (!display.begin(SSD1306_SWITCHCAPVCC, 0x3C)) {
-    Serial.println(F("Display OLED nao encontrado!"));
+  // Inicializa o display OLED
+  if (!display.begin(SSD1306_SWITCHCAPVCC, 0x3C)) { // Endereço 0x3C comum
+    Serial.println(F("Erro ao iniciar o display OLED"));
     while (true);
   }
 
-  // Mensagem de autoria
   display.clearDisplay();
   display.setTextSize(1);
   display.setTextColor(SSD1306_WHITE);
-  display.setCursor(10, 20);
-  display.println("Desenvolvido por:");
-  display.setCursor(10, 35);
-  display.println("@br.LcSistemas");
+  display.setCursor(0, 0);
+  display.println(F("Jogo Genius"));
+  display.setCursor(0, 10);
+  display.println(F("By @BR.LCSISTEMAS"));
   display.display();
-  delay(3000);
-
-  // Título do jogo
-  display.clearDisplay();
-  display.setCursor(20, 20);
-  display.println("   Genius Game");
-  display.display();
-  delay(1000);
+  delay(2000);
 
   updateOLED();
   playStartSound();
@@ -71,19 +62,15 @@ void setup() {
 
 void loop() {
   addStepToSequence();
-  playSequence();
   updateOLED();
+  playSequence();
 
   if (!getPlayerInput()) {
     gameOver();
     delay(2000);
     level = 0;
-    updateOLED();
+    updateOLED(); // Mostra recorde mesmo após erro
   } else {
-    if (level > highScore) {
-      highScore = level;
-      celebrateNewRecord();
-    }
     delay(1000);
   }
 }
@@ -91,6 +78,9 @@ void loop() {
 void addStepToSequence() {
   sequence[level] = random(0, 4);
   level++;
+  if (level > highScore) {
+    highScore = level;
+  }
 }
 
 void playSequence() {
@@ -154,26 +144,16 @@ void gameOver() {
   }
 }
 
-void celebrateNewRecord() {
-  unsigned long start = millis();
-  while (millis() - start < 5000) {
-    tone(BUZZER, 440);
-    for (int i = 0; i < 4; i++) digitalWrite(leds[i], HIGH);
-    delay(250);
-    for (int i = 0; i < 4; i++) digitalWrite(leds[i], LOW);
-    delay(250);
-  }
-  noTone(BUZZER);
-}
-
+// Atualiza o display OLED com o nível atual e o recorde
 void updateOLED() {
   display.clearDisplay();
-  display.setTextSize(2);  // Fonte maior
+  display.setTextSize(2);
   display.setCursor(0, 0);
   display.print("Nivel: ");
   display.println(level);
 
-  display.setCursor(0, 32);
+  display.setTextSize(2);
+  display.setCursor(0, 30);
   display.print("Recorde: ");
   display.println(highScore);
 
