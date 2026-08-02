@@ -57,6 +57,14 @@ U8G2_SSD1306_128X64_NONAME_1_HW_I2C u8g2(
 
 #define BUZZER 10
 
+//======================================================
+// DIFICULDADE
+// 0 = muito facil
+// 5 = normal
+// 10 = impossivel
+//======================================================
+byte DIFICULDADE = 2;
+
 CRGB leds[NUM_LEDS];
 
 // ======================================================
@@ -263,6 +271,28 @@ void gameOverSound() {
 // JOGO
 // ======================================================
 
+
+//======================================================
+// DIFICULDADE
+//======================================================
+void atualizarVelocidade() {
+
+  switch (DIFICULDADE) {
+
+    case 0: enemyMoveDelay=900; spawnDelay=2400; break;
+    case 1: enemyMoveDelay=800; spawnDelay=2100; break;
+    case 2: enemyMoveDelay=700; spawnDelay=1800; break;
+    case 3: enemyMoveDelay=600; spawnDelay=1550; break;
+    case 4: enemyMoveDelay=510; spawnDelay=1300; break;
+    case 5: enemyMoveDelay=430; spawnDelay=1100; break;
+    case 6: enemyMoveDelay=360; spawnDelay=900; break;
+    case 7: enemyMoveDelay=290; spawnDelay=730; break;
+    case 8: enemyMoveDelay=220; spawnDelay=560; break;
+    case 9: enemyMoveDelay=170; spawnDelay=430; break;
+    case 10: enemyMoveDelay=120; spawnDelay=320; break;
+  }
+}
+
 void clearGame() {
   memset(enemies, 0, sizeof(enemies));
 
@@ -272,8 +302,7 @@ void clearGame() {
 
   score = 0;
 
-  enemyMoveDelay = 430;
-  spawnDelay = 1100;
+  atualizarVelocidade();
 
   gameStart = millis();
   lastEnemyMove = millis();
@@ -384,20 +413,7 @@ void moveShot() {
 }
 
 void updateDifficulty() {
-  unsigned long seconds = (millis() - gameStart) / 1000UL;
-
-  long newEnemyDelay = 430L - ((long)seconds * 5L);
-  if (newEnemyDelay < 110L) {
-    newEnemyDelay = 110L;
-  }
-
-  long newSpawnDelay = 1100L - ((long)seconds * 8L);
-  if (newSpawnDelay < 350L) {
-    newSpawnDelay = 350L;
-  }
-
-  enemyMoveDelay = (unsigned long)newEnemyDelay;
-  spawnDelay = (unsigned long)newSpawnDelay;
+  atualizarVelocidade();
 }
 
 // ======================================================
