@@ -1,0 +1,525 @@
+/*
+  COLOR SHOOTER - 60 LEDS - OLED BAIXA MEMORIA - ARDUINO UNO
+
+  MECANICA:
+  - Bolinhas coloridas descem pela fita.
+  - Aperte um botao para disparar a cor correspondente.
+  - O tiro sobe LED por LED.
+  - Se atingir uma bolinha da mesma cor: +1 ponto.
+  - Se atingir cor diferente: o tiro desaparece.
+  - Se uma bolinha chegar ao jogador: GAME OVER.
+  - Recorde de pontos salvo na EEPROM.
+
+  PINOS:
+  Fita WS2812B -> pino 5
+  Botao verde  -> pino 6 e GND
+  Botao vermelho -> pino 7 e GND
+  Botao azul   -> pino 8 e GND
+  Buzzer       -> pino 10
+  OLED SDA     -> A4
+  OLED SCL     -> A5
+
+  BIBLIOTECAS:
+  - FastLED
+  - U8g2
+*/
+
+#include <Wire.h>
+#include <EEPROM.h>
+#include <FastLED.h>
+#include <U8g2lib.h>
+
+// ======================================================
+// OLED - U8G2 EM MODO PAGE BUFFER
+// ======================================================
+//
+// O sufixo "_1_" usa um pequeno buffer por paginas,
+// em vez de reservar 1024 bytes de RAM como a biblioteca
+// Adafruit SSD1306. Isso permite usar os 60 LEDs no Uno.
+//
+
+U8G2_SSD1306_128X64_NONAME_1_HW_I2C u8g2(
+  U8G2_R0,
+  U8X8_PIN_NONE
+);
+
+// ======================================================
+// HARDWARE
+// ======================================================
+
+#define DATA_PIN 5
+#define NUM_LEDS 60
+#define BRIGHTNESS 80
+
+#define BTN_GREEN 6
+#define BTN_RED   7
+#define BTN_BLUE  8
+
+#define BUZZER 10
+
+CRGB leds[NUM_LEDS];
+
+// ======================================================
+// ESTADO DA FITA
+// ======================================================
+//
+// 0 = vazio
+// 1 = verde
+// 2 = vermelho
+// 3 = azul
+//
+
+byte enemies[NUM_LEDS];
+
+// Apenas um tiro ativo por vez.
+// Isso deixa o jogo leve e confiavel no Arduino Uno.
+bool shotActive = false;
+byte shotColor = 0;
+int shotPosition = 0;
+
+// ======================================================
+// JOGO
+// ======================================================
+
+unsigned int score = 0;
+unsigned int highScore = 0;
+
+unsigned long gameStart = 0;
+unsigned long lastEnemyMove = 0;
+unsigned long lastShotMove = 0;
+unsigned long lastSpawn = 0;
+unsigned long lastDisplay = 0;
+
+unsigned long enemyMoveDelay = 430;
+const unsigned long shotMoveDelay = 38;
+unsigned long spawnDelay = 1100;
+
+bool gameRunning = true;
+
+// ======================================================
+// BOTOES
+// ======================================================
+
+bool lastGreen = HIGH;
+bool lastRed = HIGH;
+bool lastBlue = HIGH;
+
+unsigned long debounceGreen = 0;
+unsigned long debounceRed = 0;
+unsigned long debounceBlue = 0;
+
+const unsigned long DEBOUNCE_MS = 25;
+
+// ======================================================
+// EEPROM
+// ======================================================
+
+#define EEPROM_MAGIC_ADDR 0
+#define EEPROM_SCORE_ADDR 4
+#define EEPROM_MAGIC 123
+
+void loadHighScore() {
+  if (EEPROM.read(EEPROM_MAGIC_ADDR) != EEPROM_MAGIC) {
+    EEPROM.write(EEPROM_MAGIC_ADDR, EEPROM_MAGIC);
+    highScore = 0;
+    EEPROM.put(EEPROM_SCORE_ADDR, highScore);
+    return;
+  }
+
+  EEPROM.get(EEPROM_SCORE_ADDR, highScore);
+
+  if (highScore > 9999) {
+    highScore = 0;
+    EEPROM.put(EEPROM_SCORE_ADDR, highScore);
+  }
+}
+
+void saveHighScore() {
+  EEPROM.put(EEPROM_SCORE_ADDR, highScore);
+}
+
+// ======================================================
+// CORES
+// ======================================================
+
+CRGB getColor(byte color) {
+  if (color == 1) return CRGB::Green;
+  if (color == 2) return CRGB::Red;
+  return CRGB::Blue;
+}
+
+// ======================================================
+// DISPLAY
+// ======================================================
+
+void drawDisplay() {
+  char buffer[12];
+
+  u8g2.firstPage();
+  do {
+    u8g2.setFont(u8g2_font_6x12_tf);
+
+    u8g2.drawStr(0, 10, "PONTOS");
+    u8g2.drawStr(76, 10, "REC");
+
+    u8g2.setFont(u8g2_font_logisoso20_tn);
+
+    itoa(score, buffer, 10);
+    u8g2.drawStr(0, 33, buffer);
+
+    itoa(highScore, buffer, 10);
+    u8g2.drawStr(76, 33, buffer);
+
+    u8g2.drawHLine(0, 39, 128);
+
+    u8g2.setFont(u8g2_font_6x12_tf);
+    u8g2.drawStr(0, 54, "Atire na mesma cor");
+  } while (u8g2.nextPage());
+}
+
+void drawGameOver() {
+  char buffer[12];
+
+  u8g2.firstPage();
+  do {
+    u8g2.setFont(u8g2_font_9x15B_tf);
+    u8g2.drawStr(18, 18, "GAME OVER");
+
+    u8g2.setFont(u8g2_font_6x12_tf);
+
+    u8g2.drawStr(0, 39, "Pontos:");
+    itoa(score, buffer, 10);
+    u8g2.drawStr(50, 39, buffer);
+
+    u8g2.drawStr(0, 55, "Recorde:");
+    itoa(highScore, buffer, 10);
+    u8g2.drawStr(50, 55, buffer);
+  } while (u8g2.nextPage());
+}
+
+// ======================================================
+// FITA
+// ======================================================
+
+void drawStrip() {
+  fill_solid(leds, NUM_LEDS, CRGB::Black);
+
+  // Base do jogador.
+  leds[0] = CRGB(8, 8, 8);
+
+  // Bolinhas inimigas.
+  for (byte i = 1; i < NUM_LEDS; i++) {
+    if (enemies[i] != 0) {
+      leds[i] = getColor(enemies[i]);
+    }
+  }
+
+  // Tiro.
+  if (shotActive &&
+      shotPosition >= 0 &&
+      shotPosition < NUM_LEDS) {
+
+    leds[shotPosition] = getColor(shotColor);
+
+    if (shotPosition > 0) {
+      CRGB trail = getColor(shotColor);
+      trail.nscale8(60);
+      leds[shotPosition - 1] += trail;
+    }
+  }
+
+  FastLED.show();
+}
+
+// ======================================================
+// SONS
+// ======================================================
+
+void shotSound(byte color) {
+  if (color == 1) tone(BUZZER, 900, 30);
+  if (color == 2) tone(BUZZER, 750, 30);
+  if (color == 3) tone(BUZZER, 1050, 30);
+}
+
+void hitSound(byte color) {
+  if (color == 1) tone(BUZZER, 1250, 70);
+  if (color == 2) tone(BUZZER, 1050, 70);
+  if (color == 3) tone(BUZZER, 1450, 70);
+}
+
+void wrongSound() {
+  tone(BUZZER, 250, 60);
+}
+
+void gameOverSound() {
+  tone(BUZZER, 220, 180);
+  delay(200);
+  tone(BUZZER, 120, 350);
+  delay(370);
+  noTone(BUZZER);
+}
+
+// ======================================================
+// JOGO
+// ======================================================
+
+void clearGame() {
+  memset(enemies, 0, sizeof(enemies));
+
+  shotActive = false;
+  shotPosition = 0;
+  shotColor = 0;
+
+  score = 0;
+
+  enemyMoveDelay = 430;
+  spawnDelay = 1100;
+
+  gameStart = millis();
+  lastEnemyMove = millis();
+  lastShotMove = millis();
+  lastSpawn = millis();
+  lastDisplay = 0;
+
+  gameRunning = true;
+
+  FastLED.clear(true);
+
+  // Primeira bolinha.
+  enemies[NUM_LEDS - 1] = random(1, 4);
+
+  drawStrip();
+  drawDisplay();
+}
+
+void gameOver() {
+  gameRunning = false;
+
+  if (score > highScore) {
+    highScore = score;
+    saveHighScore();
+  }
+
+  fill_solid(leds, NUM_LEDS, CRGB::Red);
+  FastLED.show();
+
+  drawGameOver();
+  gameOverSound();
+
+  delay(1400);
+
+  clearGame();
+}
+
+void spawnEnemy() {
+  // Evita criar uma bolinha em cima de outra.
+  if (enemies[NUM_LEDS - 1] == 0 &&
+      enemies[NUM_LEDS - 2] == 0) {
+
+    enemies[NUM_LEDS - 1] = random(1, 4);
+  }
+}
+
+void moveEnemies() {
+  // Se já existe inimigo no LED 1, ele chegou ao jogador.
+  if (enemies[1] != 0) {
+    gameOver();
+    return;
+  }
+
+  for (byte i = 1; i < NUM_LEDS - 1; i++) {
+    enemies[i] = enemies[i + 1];
+  }
+
+  enemies[NUM_LEDS - 1] = 0;
+}
+
+void fireShot(byte color) {
+  // Um novo tiro somente quando o anterior terminou.
+  if (shotActive) {
+    return;
+  }
+
+  shotActive = true;
+  shotPosition = 0;
+  shotColor = color;
+
+  shotSound(color);
+}
+
+void moveShot() {
+  if (!shotActive) {
+    return;
+  }
+
+  shotPosition++;
+
+  if (shotPosition >= NUM_LEDS) {
+    shotActive = false;
+    return;
+  }
+
+  // Verifica se o tiro encontrou alguma bolinha.
+  if (enemies[shotPosition] != 0) {
+    if (enemies[shotPosition] == shotColor) {
+      byte hitColor = enemies[shotPosition];
+
+      enemies[shotPosition] = 0;
+      shotActive = false;
+
+      score++;
+
+      if (score > highScore) {
+        highScore = score;
+        saveHighScore();
+      }
+
+      hitSound(hitColor);
+    } else {
+      // Cor errada: tiro desaparece e inimigo continua.
+      shotActive = false;
+      wrongSound();
+    }
+  }
+}
+
+void updateDifficulty() {
+  unsigned long seconds = (millis() - gameStart) / 1000UL;
+
+  long newEnemyDelay = 430L - ((long)seconds * 5L);
+  if (newEnemyDelay < 110L) {
+    newEnemyDelay = 110L;
+  }
+
+  long newSpawnDelay = 1100L - ((long)seconds * 8L);
+  if (newSpawnDelay < 350L) {
+    newSpawnDelay = 350L;
+  }
+
+  enemyMoveDelay = (unsigned long)newEnemyDelay;
+  spawnDelay = (unsigned long)newSpawnDelay;
+}
+
+// ======================================================
+// BOTOES
+// ======================================================
+
+void checkButton(
+  byte pin,
+  bool &lastState,
+  unsigned long &lastDebounce,
+  byte color
+) {
+  bool reading = digitalRead(pin);
+
+  if (reading != lastState &&
+      millis() - lastDebounce >= DEBOUNCE_MS) {
+
+    lastDebounce = millis();
+    lastState = reading;
+
+    if (reading == LOW && gameRunning) {
+      fireShot(color);
+    }
+  }
+}
+
+void readButtons() {
+  checkButton(
+    BTN_GREEN,
+    lastGreen,
+    debounceGreen,
+    1
+  );
+
+  checkButton(
+    BTN_RED,
+    lastRed,
+    debounceRed,
+    2
+  );
+
+  checkButton(
+    BTN_BLUE,
+    lastBlue,
+    debounceBlue,
+    3
+  );
+}
+
+// ======================================================
+// SETUP
+// ======================================================
+
+void setup() {
+  pinMode(BTN_GREEN, INPUT_PULLUP);
+  pinMode(BTN_RED, INPUT_PULLUP);
+  pinMode(BTN_BLUE, INPUT_PULLUP);
+
+  pinMode(BUZZER, OUTPUT);
+
+  randomSeed(analogRead(A0));
+
+  FastLED.addLeds<WS2812B, DATA_PIN, GRB>(
+    leds,
+    NUM_LEDS
+  );
+
+  FastLED.setBrightness(BRIGHTNESS);
+  FastLED.clear(true);
+
+  Wire.begin();
+
+  // U8g2 em page-buffer: consome pouca RAM.
+  // O endereco 0x3C e o padrao deste construtor.
+  u8g2.begin();
+  u8g2.setContrast(255);
+
+  loadHighScore();
+
+  clearGame();
+}
+
+// ======================================================
+// LOOP
+// ======================================================
+
+void loop() {
+  if (!gameRunning) {
+    return;
+  }
+
+  readButtons();
+
+  unsigned long now = millis();
+
+  updateDifficulty();
+
+  if (now - lastShotMove >= shotMoveDelay) {
+    lastShotMove = now;
+    moveShot();
+    drawStrip();
+  }
+
+  if (now - lastEnemyMove >= enemyMoveDelay) {
+    lastEnemyMove = now;
+    moveEnemies();
+
+    if (!gameRunning) {
+      return;
+    }
+
+    drawStrip();
+  }
+
+  if (now - lastSpawn >= spawnDelay) {
+    lastSpawn = now;
+    spawnEnemy();
+    drawStrip();
+  }
+
+  if (now - lastDisplay >= 120) {
+    lastDisplay = now;
+    drawDisplay();
+  }
+}
