@@ -1,5 +1,5 @@
 /*
-  COLOR SHOOTER - 60 LEDS - OLED BAIXA MEMORIA - ARDUINO UNO
+  COLOR SHOOTER - 60 LEDS - MULTI TIRO - OLED BAIXA MEMORIA - ARDUINO UNO
 
   MECANICA:
   - Bolinhas coloridas descem pela fita.
@@ -57,13 +57,13 @@ U8G2_SSD1306_128X64_NONAME_1_HW_I2C u8g2(
 
 #define BUZZER 10
 
-//======================================================
+// ======================================================
 // DIFICULDADE
 // 0 = muito facil
 // 5 = normal
-// 10 = impossivel
-//======================================================
-byte DIFICULDADE = 2;
+// 10 = muito dificil
+// ======================================================
+byte DIFICULDADE = 5;
 
 CRGB leds[NUM_LEDS];
 
@@ -79,11 +79,20 @@ CRGB leds[NUM_LEDS];
 
 byte enemies[NUM_LEDS];
 
-// Apenas um tiro ativo por vez.
-// Isso deixa o jogo leve e confiavel no Arduino Uno.
-bool shotActive = false;
-byte shotColor = 0;
-int shotPosition = 0;
+// Permite varios tiros em sequencia.
+#define MAX_SHOTS 5
+
+struct Shot {
+  bool active;
+  byte color;
+  byte position;
+};
+
+Shot shots[MAX_SHOTS];
+
+// Intervalo minimo entre disparos.
+const unsigned long SHOT_COOLDOWN_MS = 70;
+unsigned long lastFireTime = 0;
 
 // ======================================================
 // JOGO
@@ -222,17 +231,23 @@ void drawStrip() {
     }
   }
 
-  // Tiro.
-  if (shotActive &&
-      shotPosition >= 0 &&
-      shotPosition < NUM_LEDS) {
+  // Todos os tiros ativos.
+  for (byte s = 0; s < MAX_SHOTS; s++) {
+    if (!shots[s].active) {
+      continue;
+    }
 
-    leds[shotPosition] = getColor(shotColor);
+    byte p = shots[s].position;
 
-    if (shotPosition > 0) {
-      CRGB trail = getColor(shotColor);
-      trail.nscale8(60);
-      leds[shotPosition - 1] += trail;
+    if (p < NUM_LEDS) {
+      leds[p] += getColor(shots[s].color);
+
+      // Rastro do tiro.
+      if (p > 0) {
+        CRGB trail = getColor(shots[s].color);
+        trail.nscale8(60);
+        leds[p - 1] += trail;
+      }
     }
   }
 
@@ -271,34 +286,36 @@ void gameOverSound() {
 // JOGO
 // ======================================================
 
-
-//======================================================
-// DIFICULDADE
-//======================================================
 void atualizarVelocidade() {
+  if (DIFICULDADE > 10) {
+    DIFICULDADE = 10;
+  }
 
   switch (DIFICULDADE) {
-
-    case 0: enemyMoveDelay=900; spawnDelay=2400; break;
-    case 1: enemyMoveDelay=800; spawnDelay=2100; break;
-    case 2: enemyMoveDelay=700; spawnDelay=1800; break;
-    case 3: enemyMoveDelay=600; spawnDelay=1550; break;
-    case 4: enemyMoveDelay=510; spawnDelay=1300; break;
-    case 5: enemyMoveDelay=430; spawnDelay=1100; break;
-    case 6: enemyMoveDelay=360; spawnDelay=900; break;
-    case 7: enemyMoveDelay=290; spawnDelay=730; break;
-    case 8: enemyMoveDelay=220; spawnDelay=560; break;
-    case 9: enemyMoveDelay=170; spawnDelay=430; break;
-    case 10: enemyMoveDelay=120; spawnDelay=320; break;
+    case 0:  enemyMoveDelay = 900; spawnDelay = 2400; break;
+    case 1:  enemyMoveDelay = 800; spawnDelay = 2100; break;
+    case 2:  enemyMoveDelay = 700; spawnDelay = 1800; break;
+    case 3:  enemyMoveDelay = 600; spawnDelay = 1550; break;
+    case 4:  enemyMoveDelay = 510; spawnDelay = 1300; break;
+    case 5:  enemyMoveDelay = 430; spawnDelay = 1100; break;
+    case 6:  enemyMoveDelay = 360; spawnDelay = 900;  break;
+    case 7:  enemyMoveDelay = 290; spawnDelay = 730;  break;
+    case 8:  enemyMoveDelay = 220; spawnDelay = 560;  break;
+    case 9:  enemyMoveDelay = 170; spawnDelay = 430;  break;
+    case 10: enemyMoveDelay = 120; spawnDelay = 320;  break;
   }
 }
 
 void clearGame() {
   memset(enemies, 0, sizeof(enemies));
 
-  shotActive = false;
-  shotPosition = 0;
-  shotColor = 0;
+  for (byte s = 0; s < MAX_SHOTS; s++) {
+    shots[s].active = false;
+    shots[s].color = 0;
+    shots[s].position = 0;
+  }
+
+  lastFireTime = 0;
 
   score = 0;
 
@@ -364,50 +381,61 @@ void moveEnemies() {
 }
 
 void fireShot(byte color) {
-  // Um novo tiro somente quando o anterior terminou.
-  if (shotActive) {
+  unsigned long now = millis();
+
+  if (now - lastFireTime < SHOT_COOLDOWN_MS) {
     return;
   }
 
-  shotActive = true;
-  shotPosition = 0;
-  shotColor = color;
+  for (byte s = 0; s < MAX_SHOTS; s++) {
+    if (!shots[s].active) {
+      shots[s].active = true;
+      shots[s].position = 0;
+      shots[s].color = color;
 
-  shotSound(color);
+      lastFireTime = now;
+      shotSound(color);
+      return;
+    }
+  }
 }
 
 void moveShot() {
-  if (!shotActive) {
-    return;
-  }
+  for (byte s = 0; s < MAX_SHOTS; s++) {
+    if (!shots[s].active) {
+      continue;
+    }
 
-  shotPosition++;
+    shots[s].position++;
 
-  if (shotPosition >= NUM_LEDS) {
-    shotActive = false;
-    return;
-  }
+    if (shots[s].position >= NUM_LEDS) {
+      shots[s].active = false;
+      continue;
+    }
 
-  // Verifica se o tiro encontrou alguma bolinha.
-  if (enemies[shotPosition] != 0) {
-    if (enemies[shotPosition] == shotColor) {
-      byte hitColor = enemies[shotPosition];
+    byte p = shots[s].position;
 
-      enemies[shotPosition] = 0;
-      shotActive = false;
+    // Verifica se este tiro encontrou alguma bolinha.
+    if (enemies[p] != 0) {
+      if (enemies[p] == shots[s].color) {
+        byte hitColor = enemies[p];
 
-      score++;
+        enemies[p] = 0;
+        shots[s].active = false;
 
-      if (score > highScore) {
-        highScore = score;
-        saveHighScore();
+        score++;
+
+        if (score > highScore) {
+          highScore = score;
+          saveHighScore();
+        }
+
+        hitSound(hitColor);
+      } else {
+        // Cor errada: apenas este tiro desaparece.
+        shots[s].active = false;
+        wrongSound();
       }
-
-      hitSound(hitColor);
-    } else {
-      // Cor errada: tiro desaparece e inimigo continua.
-      shotActive = false;
-      wrongSound();
     }
   }
 }
